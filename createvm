@@ -1,0 +1,61 @@
+#!/bin/bash
+# mar
+
+IP=35
+NAME="test$IP"
+
+# -d 45
+/home/markus/kvm-install-vm/kvm-install-vm create -k /root/.ssh/id_rsa.pub -v -u debian -a -b br-xen -c 2 -g vnc -t debian9 -L /xen/deploy -m 2048 -D nodiskno.fun $NAME
+
+modprobe nbd max_part=63
+virsh destroy $NAME
+sleep 3
+qemu-nbd -c /dev/nbd0 /xen/deploy/$NAME/$NAME.qcow2
+zfs create -V 50gb xen/kvm/$NAME
+sleep 2;
+echo "dd"
+dd if=/dev/nbd0 of=/dev/zvol/xen/kvm/$NAME conv=fdatasync bs=1M
+sync
+sleep 5
+killall -9 qemu-nbd
+kpartx -a /dev/zvol/xen/kvm/$NAME
+mount /dev/mapper/${NAME}p1 /mnt/
+
+## echo the network config 
+echo "
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+
+source /etc/network/interfaces.d/*
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# The normal eth0
+auto eth0
+iface eth0 inet static
+	address 192.168.66.$IP
+	netmask 255.255.255.0
+	gateway 192.168.66.1
+	dns-nameservers 4.2.2.2
+" > /mnt/etc/network/interfaces
+# ssh keygen to virtcontainer
+#chroot /mnt "ssh-keygen -b 2048 -t rsa -f /root/.ssh/ -N \"\""
+#cp /root/.ssh/id_rsa.pub /mnt/root/.ssh/authorized_keys
+#cp /root/.ssh/id_rsa.pub /mnt/home/debian/.ssh/authorized_keys
+
+umount /mnt
+kpartx -d /dev/zvol/xen/kvm/$NAME
+
+virsh detach-disk $NAME vda --persistent
+
+echo "
+<disk type='block' device='disk'>
+  <driver name='qemu' type='raw' cache='none' io='native'/>
+  <source dev='/dev/zvol/xen/kvm/$NAME'/>
+  <target dev='vda' bus='virtio'/>
+  <address type='pci' domain='0x0000' bus='0x00' slot='0x06' function='0x0'/>
+</disk>" > /xen/deploy/$NAME/$NAME.xml
+
+virsh attach-device $NAME /xen/deploy/$NAME/$NAME.xml --persistent --config
